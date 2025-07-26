@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Car AI Monitor",
+            "type": "shell",
+            "command": "/Users/venkataraju/projects/car_ai/.venv/bin/python src/main.py",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}
