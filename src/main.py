@@ -80,13 +80,32 @@ def get_head_pose(shape, frame):
     dist_coeffs = np.zeros((4,1))
     success, rotation_vector, translation_vector = cv2.solvePnP(
         model_points, image_points, camera_matrix, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
-    return rotation_vector, translation_vector
+    # Convert rotation vector to Euler angles (pitch, yaw, roll)
+    rmat, _ = cv2.Rodrigues(rotation_vector)
+    sy = np.sqrt(rmat[0,0] * rmat[0,0] + rmat[1,0] * rmat[1,0])
+    singular = sy < 1e-6
+    if not singular:
+        pitch = np.arctan2(rmat[2,1], rmat[2,2])
+        yaw = np.arctan2(-rmat[2,0], sy)
+        roll = np.arctan2(rmat[1,0], rmat[0,0])
+    else:
+        pitch = np.arctan2(-rmat[1,2], rmat[1,1])
+        yaw = np.arctan2(-rmat[2,0], sy)
+        roll = 0
+    # Convert to degrees
+    pitch = np.degrees(pitch)
+    yaw = np.degrees(yaw)
+    roll = np.degrees(roll)
+    return rotation_vector, translation_vector, (pitch, yaw, roll)
 
 def process_frame(frame, closed_eyes_frames):
     global head_positions, last_alert_time, last_motion_alert_time
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     rects = face_detector(gray, 0)
     import time
+    # For improved motion sickness detection
+    if not hasattr(process_frame, 'angle_history'):
+        process_frame.angle_history = collections.deque(maxlen=HEAD_HISTORY_LEN)
     for rect in rects:
         shape = predictor(gray, rect)
         shape = face_utils.shape_to_np(shape)
@@ -108,16 +127,23 @@ def process_frame(frame, closed_eyes_frames):
                 last_alert_time = now
         else:
             closed_eyes_frames = 0
-        # --- Motion Sickness Detection ---
-        rot_vec, _ = get_head_pose(shape, frame)
+        # --- Improved Motion Sickness Detection ---
+        rot_vec, _, (pitch, yaw, roll) = get_head_pose(shape, frame)
         head_positions.append(rot_vec.flatten())
-        if len(head_positions) == HEAD_HISTORY_LEN:
-            diffs = np.diff(np.array(head_positions), axis=0)
-            movement = np.linalg.norm(diffs, axis=1).mean()
-            if movement > 0.15 and (now - last_motion_alert_time > 5):
-                print("ALERT: Possible motion sickness detected!")
-                cv2.putText(frame, "ALERT: Motion Sickness!", (x, y+h+40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
-                voice_alert("Warning: Possible motion sickness detected!")
+        process_frame.angle_history.append([pitch, yaw, roll])
+        # Show angles for debugging
+        cv2.putText(frame, f"Pitch: {pitch:.1f}", (x, y+h+60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        cv2.putText(frame, f"Yaw: {yaw:.1f}", (x, y+h+75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        cv2.putText(frame, f"Roll: {roll:.1f}", (x, y+h+90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        # Calculate std deviation of angles
+        if len(process_frame.angle_history) == HEAD_HISTORY_LEN:
+            angles = np.array(process_frame.angle_history)
+            stds = np.std(angles, axis=0)
+            # If any angle's stddev is high, trigger alert
+            if (stds > [8, 8, 8]).any() and (now - last_motion_alert_time > 60):
+                print(f"ALERT: Erratic head movement detected! stds: pitch={stds[0]:.2f}, yaw={stds[1]:.2f}, roll={stds[2]:.2f}")
+                cv2.putText(frame, "ALERT: Erratic head movement!", (x, y+h+40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
+                voice_alert("Warning: Rapid or erratic head movement detected. Possible motion sickness!")
                 last_motion_alert_time = now
     return frame, closed_eyes_frames
 
