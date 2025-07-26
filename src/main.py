@@ -1,3 +1,13 @@
+# --- Yawn Detection Helper ---
+def mouth_aspect_ratio(landmarks):
+    # Use mouth landmarks 60-67 (outer mouth)
+    mouth = landmarks[60:68]
+    A = np.linalg.norm(mouth[2] - mouth[10 % 8])  # 62-66
+    B = np.linalg.norm(mouth[4] - mouth[8 % 8])   # 64-68
+    C = np.linalg.norm(mouth[0] - mouth[6])       # 60-66
+    mar = (A + B) / (2.0 * C)
+    return mar
+
 import cv2
 import numpy as np
 import pyttsx3
@@ -106,6 +116,15 @@ def process_frame(frame, closed_eyes_frames):
     # For improved motion sickness detection
     if not hasattr(process_frame, 'angle_history'):
         process_frame.angle_history = collections.deque(maxlen=HEAD_HISTORY_LEN)
+    # --- Distraction/Yawn Alert Timers ---
+    if not hasattr(process_frame, 'last_distraction_alert_time'):
+        process_frame.last_distraction_alert_time = 0
+    if not hasattr(process_frame, 'last_yawn_alert_time'):
+        process_frame.last_yawn_alert_time = 0
+
+    # Set alert delays (seconds)
+    ALERT_DELAY = 30
+
     for rect in rects:
         shape = predictor(gray, rect)
         shape = face_utils.shape_to_np(shape)
@@ -120,14 +139,15 @@ def process_frame(frame, closed_eyes_frames):
         if eyes_closed(shape):
             closed_eyes_frames += 1
             cv2.putText(frame, f"Eyes closed: {closed_eyes_frames}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 2)
-            if closed_eyes_frames > 15 and (now - last_alert_time > 5):
+            if closed_eyes_frames > 15 and (now - last_alert_time > ALERT_DELAY):
                 print("ALERT: Drowsiness detected!")
                 cv2.putText(frame, "ALERT: Drowsiness detected!", (x, y+h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                 voice_alert("Warning: Driver appears drowsy or sleeping!")
                 last_alert_time = now
         else:
             closed_eyes_frames = 0
-        # --- Improved Motion Sickness Detection ---
+
+        # --- Distraction Detection (head turned away) ---
         rot_vec, _, (pitch, yaw, roll) = get_head_pose(shape, frame)
         head_positions.append(rot_vec.flatten())
         process_frame.angle_history.append([pitch, yaw, roll])
@@ -135,12 +155,29 @@ def process_frame(frame, closed_eyes_frames):
         cv2.putText(frame, f"Pitch: {pitch:.1f}", (x, y+h+60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
         cv2.putText(frame, f"Yaw: {yaw:.1f}", (x, y+h+75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
         cv2.putText(frame, f"Roll: {roll:.1f}", (x, y+h+90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+        # Distraction if yaw or pitch is out of normal range
+        if (abs(yaw) > 25 or abs(pitch) > 20) and (now - process_frame.last_distraction_alert_time > ALERT_DELAY):
+            print(f"ALERT: Driver distracted! Yaw: {yaw:.1f}, Pitch: {pitch:.1f}")
+            cv2.putText(frame, "ALERT: Driver distracted!", (x, y+h+110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,140,255), 2)
+            voice_alert("Warning: Driver appears distracted. Please focus on the road!")
+            process_frame.last_distraction_alert_time = now
+
+        # --- Yawn Detection ---
+        mar = mouth_aspect_ratio(shape)
+        cv2.putText(frame, f"MAR: {mar:.2f}", (x, y+h+125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1)
+        if mar > 0.7 and (now - process_frame.last_yawn_alert_time > ALERT_DELAY):
+            print(f"ALERT: Yawn detected! MAR: {mar:.2f}")
+            cv2.putText(frame, "ALERT: Yawn detected!", (x, y+h+140), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
+            voice_alert("Warning: Driver appears to be yawning. Please stay alert!")
+            process_frame.last_yawn_alert_time = now
+
+        # --- Improved Motion Sickness Detection ---
         # Calculate std deviation of angles
         if len(process_frame.angle_history) == HEAD_HISTORY_LEN:
             angles = np.array(process_frame.angle_history)
             stds = np.std(angles, axis=0)
             # If any angle's stddev is high, trigger alert
-            if (stds > [8, 8, 8]).any() and (now - last_motion_alert_time > 60):
+            if (stds > [8, 8, 8]).any() and (now - last_motion_alert_time > ALERT_DELAY):
                 print(f"ALERT: Erratic head movement detected! stds: pitch={stds[0]:.2f}, yaw={stds[1]:.2f}, roll={stds[2]:.2f}")
                 cv2.putText(frame, "ALERT: Erratic head movement!", (x, y+h+40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,165,255), 2)
                 voice_alert("Warning: Rapid or erratic head movement detected. Possible motion sickness!")
