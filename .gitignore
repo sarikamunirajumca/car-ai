@@ -1,0 +1,7 @@
+# Ignore large files and data
+sample_video.avi
+sample_video.mp4
+shape_predictor_68_face_landmarks.dat
+*.avi
+*.mp4
+*.dat
